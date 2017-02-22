@@ -1,0 +1,662 @@
+---
+title: "Introduction to the Twitter Data"
+author: "Pradeep Adhokshaja"
+date: "13 February 2017"
+output: 
+  html_document: 
+    fig_height: 7
+    fig_width: 10
+    theme: journal
+    toc: yes
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Data Acquisition
+
+```{r eval=F,message=FALSE}
+
+library(twitteR)
+library(RCurl)
+
+consumer_key <- "****"
+consumer_secret <- "****"
+access_token <- "****"
+access_secret <- "****"
+
+
+setup_twitter_oauth(consumer_key,consumer_secret,access_token,access_secret)
+
+inaug <- searchTwitter("#Inauguration",n=15000,lang = "en",resultType ="recent")
+inaug_data <- twListToDF(inaug)
+inaug_data$statusSource <- gsub("<.*?>", "",inaug_data$statusSource)
+
+
+write.csv(inaug_data,file="inauguration.csv")
+
+
+womensmarch <- searchTwitter("#WomensMarch",n=15000,lang = "en",resultType = "recent")
+womensmarch_data <- twListToDF(womensmarch)
+womensmarch_data$statusSource <- gsub("<.*?>", "",womensmarch_data$statusSource)
+write.csv(file="womenmarch.csv",x=womensmarch_data)
+
+
+
+```
+
+
+The above code allows you to build the data set using the twitteR package. To set up the relevant access token , key , consumer token and key you should create a Twitter Account. The tutorial to acquire the API access and consumer keya and secrets can be found here.
+
+
+
+
+
+## Loading and data
+
+
+
+
+The data set was acquired through the searchTwitter() fcuntion made available by the twitteR package. The data was then coverted to a data.frame using the twtoDF() function. Let's read the data  and find out more about what it says. We will be using the `tidyr` package in this project for text mining operations.
+
+
+```{r message=FALSE}
+library(tidyr)
+library(tidytext)
+library(dplyr)
+library(lubridate)
+library(stringr)
+library(ggplot2)
+library(ggraph)
+library(igraph)
+ing <- read.csv("inauguration.csv",stringsAsFactors = F,header = T)
+wom <- read.csv("womenmarch.csv",stringsAsFactors =  F,header=T)
+
+```
+
+Each data set is made of 15000 observations of 17 variables. These variables include twitter-text, time stamp of the tweet, the handle name and the location from which the tweet was generated. Let's take a look at some properties of the tweets.
+
+
+## Preliminary Data Analysis
+
+
+
+### Lexical Diversity
+
+This is a ratio of number of unique words to the total number of words. The function `unnest_token` tokenizes the text data into words. This makes filtering and selection very easy.
+
+```{r}
+
+lex_div <- function(text){
+  return((length(unique(text))/length(text))*100)
+}
+
+words_ing <- ing %>%
+  unnest_tokens(word,text)%>%
+  filter(str_detect(word,"^[a-z']+$"))
+
+words_wom <- wom %>% 
+  unnest_tokens(word,text) %>%
+  filter(str_detect(word,"^[a-z']+$"))
+
+lex_div(words_ing$word)
+lex_div(words_wom$word)
+
+
+
+```
+
+The output suggests a very low degree of lexical variation.
+
+
+
+
+### Frequency of Words
+
+What were the most frequent words used for each category? For this purpose, we will remove strings such as "https" and "t.co" that respectively denote links and pictures. These can be removed by the str_detect() function which returns either a `TRUE` or `FALSE`.
+
+
+```{r}
+words_ing_clean <- words_ing %>% filter(!word %in% stop_words$word,!str_detect(word,"t.co"),!str_detect(word,"https"))
+words_wom_clean <- words_wom %>% filter(!word %in% stop_words$word,!str_detect(word,"t.co"),!str_detect(word,"https"))
+
+freq_words_ing <- words_ing_clean %>% group_by(word) %>% summarise(n=n()) %>% arrange(desc(n)) %>% top_n(20)
+freq_words_wom <- words_wom_clean %>% group_by(word) %>% summarise(n=n()) %>%
+  arrange(desc(n)) %>% top_n(20)
+
+freq_words_ing$type <- rep("ing",dim(freq_words_ing)[1])
+freq_words_wom$type <- rep("wom",dim(freq_words_wom)[1])
+
+freq_words <- rbind(freq_words_ing,freq_words_wom)
+
+freq_words %>% filter(type=="wom")%>% ggplot(aes(x=reorder(word,n), n)) +
+  geom_bar(stat = "identity") +
+  xlab(NULL) +
+  coord_flip()+ggtitle("Frequent Words in the Women's  March Tweets")
+
+freq_words %>% filter(type=="ing")%>% ggplot(aes(x=reorder(word,n), n)) +
+  geom_bar(stat = "identity") +
+  xlab(NULL) +
+  coord_flip()+ggtitle("Frequent Words in the Inauguration Tweets")
+
+
+
+```
+
+As expected, the frequent words for each data tak about the subject matter. Words such as "female","future","devos","watch","clinton" were pretty frequently used in the context of the Women's March.Words like "arrested","trump","president","riots","dc" are just some of the many frequent words used in the tweets concerning the Inauguration.
+
+### Average Length of Words
+
+```{r}
+avg_ing<- words_ing_clean %>% mutate(num_chars=nchar(word)) %>% group_by(X) %>% summarise(n=mean(num_chars))%>% mutate(type="Inauguration")
+avg_wom <- words_wom_clean %>% mutate(num_chars=nchar(word)) %>% group_by(X) %>% summarise(n=mean(num_chars))%>%mutate(type="Women's March")
+
+avg <- bind_rows(avg_ing,avg_wom) 
+avg %>% ggplot(aes(x=n)) + geom_histogram(fill="white", colour="black",binwidth=1) +
+facet_grid(type ~ .)+geom_vline(data=aggregate(avg[2], avg[3], mean), 
+      mapping=aes(xintercept=n), color="red")+geom_vline(data=aggregate(avg[2],avg[3],median),mapping = aes(xintercept=n),color="blue",linetype=2)+labs(x="",y="",title="Mean length of Words",
+subtitle="Blue->Median Red->Mean",
+caption="Data from Twitter")+ theme(plot.title = element_text(size=18,hjust = 0.5),plot.caption = element_text(hjust=0,vjust=1,margin = margin(t=10)),plot.background = element_rect(fill = "#fffff8",color=NA))
+
+
+  
+
+```
+
+The mean number length of words is larger for the Women's March Tweets. The mean length is larger than the median length for both the cases. This denote a right skewed distribution.
+
+### Average Number of words by time
+
+To extract time, the `lubridate` package comes in handy.
+
+```{r}
+
+words_ing_clean %>% mutate(created=ymd_hms(created)) %>% mutate(hour=hour(created),minute=minute(created)) %>% mutate(time=hour+(minute/60)) %>% group_by(time) %>% summarise(n=mean(n())) %>% ggplot(aes(x=time,y=n))+geom_line()+theme_minimal()+labs(y="Average Number of Words",x="Time",title="Inauguration",subtitle="",caption="Data from Twitter")+ theme(legend.position="none",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))
+
+words_wom_clean %>% mutate(created=ymd_hms(created)) %>% mutate(hour=hour(created),minute=minute(created)) %>% mutate(time=hour+(minute/60)) %>% group_by(time) %>% summarise(n=mean(n())) %>% ggplot(aes(x=time,y=n))+geom_line()+theme_minimal()+labs(y="Average Number of Words",x="Time",title="Women's March",subtitle="",caption="Data from Twitter")+ theme(legend.position="none",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))
+
+
+
+```
+
+
+
+The word usage increases early in the morning and late at night.
+
+
+### Common Words between the two sets
+
+```{r}
+library(scales)
+women_percent <- words_wom_clean %>% group_by(word) %>% summarise(n=n()) %>% mutate(percent_women=n/sum(n), wom="wom") 
+ing_percent <- words_ing_clean %>% group_by(word) %>% summarise(n=n()) %>% mutate(percent_ing=n/sum(n),ing="ing")
+
+percent_words <- inner_join(women_percent,ing_percent,by="word") %>% gather(type,value,c(4,7)) %>% select(-c(value,n.x,n.y))
+
+ggplot(percent_words, aes(x = percent_women, y = percent_ing, color = abs(percent_women - percent_ing))) +
+  geom_abline(color = "gray40", lty = 2) +
+  geom_jitter(alpha = 0.1, size = 1, width = 0.3, height = 0.3) +
+  geom_text(aes(label = word), check_overlap = TRUE, vjust = 1.5) +
+  scale_x_log10(labels = percent_format()) +
+  scale_y_log10(labels = percent_format()) +
+  scale_color_gradient(limits = c(0, 0.001), low = "darkslategray4", high = "gray75") +
+  theme(legend.position="none") +
+  labs(y = "Inauguration Tweets", x ="Women's March Tweets")
+
+
+```
+
+From the above, we can clearly see what the tweets are about. A larger percentage of words that relate to the Women's March include "aclu","ceclierichards","female","clinton","abortion". From the inauguration's side we have terms such as "address","americafirst","riots","crime","biggest","trump". Words that are closer to the 45 degree line have some what similar relative frequencies in both the data sets
+
+
+## Links/Pictures
+
+### Number of Pictures and Links
+
+```{r}
+words_ing %>% mutate(Pictures = ifelse(str_detect(word,"t.co"),"Yes","No"),Links=ifelse(str_detect(word,"https"),"Yes","No")) %>% select(X,Pictures,Links)%>% gather(value,type,2:3) %>%
+  group_by(X,value,type) %>% summarise(n=n()) %>%
+  filter(type=="Yes") %>% select(-type) %>%
+  group_by(value) %>% summarise(n=sum(n)) %>%
+  ggplot(aes(x=value,y=log(n)))+geom_bar(stat="identity")+
+  ggtitle("Number of Pictures and Links in Inauguration Tweets")+
+  theme(legend.position="none",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))
+
+
+words_wom %>% mutate(Pictures = ifelse(str_detect(word,"t.co"),"Yes","No"),Links=ifelse(str_detect(word,"https"),"Yes","No")) %>% select(X,Pictures,Links)%>% gather(value,type,2:3) %>%
+  group_by(X,value,type) %>% summarise(n=n()) %>%
+  filter(type=="Yes") %>% select(-type) %>%
+  group_by(value) %>% summarise(n=sum(n)) %>%
+  ggplot(aes(x=value,y=log(n)))+geom_bar(stat="identity")+
+  ggtitle("Number of Pictures and Links in Women's March Tweets")+
+  theme(legend.position="none",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))
+  
+
+
+```
+
+
+
+## Devices Used
+
+```{r}
+wom_source <- words_wom_clean %>% group_by(X,statusSource) %>% summarise(n=n()) %>% group_by(statusSource) %>% summarise(n=n()) %>% mutate(n=(n/sum(n))*100) %>% mutate(statusSource=ifelse(n<10,"Other Sources",statusSource)) %>% group_by(statusSource)%>% summarise(n=sum(n)) %>% mutate(type="Women's March Tweets")
+
+ing_source <- words_ing_clean %>% group_by(X,statusSource) %>% summarise(n=n()) %>% group_by(statusSource) %>% summarise(n=n()) %>% mutate(n=(n/sum(n))*100) %>% mutate(statusSource=ifelse(n<10,"Other Sources",statusSource)) %>% group_by(statusSource)%>% summarise(n=sum(n)) %>% mutate(type="Inauguration Tweets")
+
+bind_rows(wom_source,ing_source) %>% ggplot(aes(x=type, y=n, fill=statusSource)) +
+geom_bar(position="dodge",stat="identity")+ggtitle("Percentage Composition of Devices") +theme(plot.title = element_text(hjust = 0.5))+labs(caption="Data from Twitter")+theme(plot.title = element_text(size=18),plot.caption = element_text(hjust=0,vjust=1,margin = margin(t=10)),plot.background = element_rect(fill = "#fffff8",color=NA))+geom_text(aes(label=round(n,2)), vjust=1.5, colour="white",
+position=position_dodge(.9), size=3)
+  
+
+
+
+
+```
+
+A majority of Twitter users use IPhones followed by Android devices. The percentage IPhone users talking about the Womens' March is higher than the percentage IPhone Users who talked about the Inauguration based on the data.
+
+### How do the device usage change with time?
+
+```{r}
+words_wom_clean %>% mutate(hour=hour(ymd_hms(created)),minute=minute(ymd_hms(created))) %>% mutate(time=hour+(minute/60)) %>% mutate(statusSource=ifelse(grepl("\\bTwitter for\\b",statusSource),statusSource,"Other Sources")) %>%
+  group_by(time,statusSource) %>% summarise(n=n()) %>%
+  ggplot(aes(x=time,y=n,colour))+geom_line()+labs(y="Number of Instances",x="Hour",title="Women's March",subtitle="",caption="Data from Twitter")+ theme(legend.position="bottom",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))+facet_wrap(~statusSource,ncol=4)
+
+
+words_ing_clean %>% mutate(hour=hour(ymd_hms(created)),minute=minute(ymd_hms(created))) %>% mutate(time=hour+(minute/60)) %>% mutate(statusSource=ifelse(grepl("\\bTwitter for\\b",statusSource),statusSource,"Other Sources")) %>%
+  group_by(time,statusSource) %>% summarise(n=n()) %>%
+  ggplot(aes(x=time,y=n))+geom_line()+labs(y="Number of Instances",x="Hour",title="Inauguration",subtitle="",caption="Data from Twitter")+ theme(legend.position="bottom",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0)) +facet_wrap(~statusSource,ncol=4)
+
+  
+
+
+
+
+
+```
+
+### Device , Links and Pictures
+
+```{r}
+words_wom %>% mutate(Pictures = ifelse(str_detect(word,"t.co"),"Yes","No"),Links=ifelse(str_detect(word,"https"),"Yes","No")) %>% select(statusSource,Pictures,Links)%>% gather(value,type,2:3) %>% mutate(statusSource=ifelse(grepl("\\bTwitter for\\b",statusSource),statusSource,"Other Sources")) %>% filter(type=="Yes") %>% select(-type) %>%
+  group_by(value,statusSource) %>%
+  summarise(n=n()) %>%
+  mutate(n=n/sum(n)) %>%
+  ggplot(aes(x=value,y=n*100,fill=statusSource))+scale_fill_manual(values = c("#24576D", "#A113E2",
+                                 "#000000", "#D91460",
+                                 "#28AADC",
+                                 "#40cc49",
+                                 "#F2583F",
+                                 "#96503F","#ffc100","#918d58","#343d39"))+geom_bar(position="dodge",stat="identity")+labs(y="%",x="Media",title="Women's March",subtitle="",caption="Data from Twitter")+ theme(legend.position="bottom",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))+geom_text(aes(label=round(n*100,2)), vjust=-0.2, colour="black",
+position=position_dodge(.9), size=3)
+
+
+
+words_ing %>% mutate(Pictures = ifelse(str_detect(word,"t.co"),"Yes","No"),Links=ifelse(str_detect(word,"https"),"Yes","No")) %>% select(statusSource,Pictures,Links)%>% gather(value,type,2:3) %>% mutate(statusSource=ifelse(grepl("\\bTwitter for\\b",statusSource),statusSource,"Other Sources")) %>% filter(type=="Yes") %>% select(-type) %>%
+  group_by(value,statusSource) %>%
+  summarise(n=n()) %>%
+  mutate(n=n/sum(n)) %>%
+  ggplot(aes(x=value,y=n*100,fill=statusSource))+scale_fill_manual(values = c("#24576D", "#A113E2",
+                                 "#000000", "#D91460",
+                                 "#28AADC",
+                                 "#40cc49",
+                                 "#F2583F",
+                                 "#96503F","#ffc100","#918d58","#343d39"))+geom_bar(position="dodge",stat="identity")+labs(y="%",x="Media",title="Inauguration",subtitle="",caption="Data from Twitter")+ theme(legend.position="bottom",plot.subtitle=element_text(face="italic"),plot.title=element_text(face="bold",hjust=0.5),plot.caption=element_text(hjust=0))+geom_text(aes(label=round(n*100,2)), vjust=-0.2, colour="black",
+position=position_dodge(.9), size=3)
+
+
+
+```
+
+
+
+## Sentiment Analysis
+
+### Composition of sentiments for each tweet set
+
+```{r}
+nrc <- get_sentiments("nrc")
+
+words_wom_clean_sent <- words_wom_clean %>% inner_join(nrc,by="word") %>% mutate(type="Women's March")
+words_ing_clean_sent <- words_ing_clean %>% inner_join(nrc,by="word") %>% mutate(type="Inauguration")
+
+clean_sent <- bind_rows(words_ing_clean_sent,words_wom_clean_sent)
+
+clean_sent %>% group_by(type,sentiment) %>% summarise(n=n()) %>% mutate(n=n/sum(n)) %>%
+ggplot(aes(x=type, y=n*100, fill=sentiment)) +
+geom_bar(stat="identity", position="dodge")+theme_minimal()+ylab("%")+ggtitle("Percentage Sentiment for each case")+theme(plot.title = element_text(hjust = 0.5))+xlab("Tweets")+scale_fill_manual(values = c("#24576D", "#A113E2",
+                                 "#000000", "#D91460",
+                                 "#28AADC",
+                                 "#40cc49",
+                                 "#F2583F",
+                                 "#96503F","#ffc100","#918d58"))
+
+
+
+
+```
+
+
+
+### Sentiments by Twitter Devices
+
+
+```{r}
+
+check <- c("Twitter","for")
+
+clean_sent %>% group_by(type,statusSource,sentiment) %>% summarise(n=n()) %>% filter(grepl("Twitter for",statusSource)) %>% mutate(n=n/sum(n)) %>% ggplot(aes(x=statusSource, y=n*100, fill=sentiment)) +
+geom_bar(stat="identity", position="dodge",width = 0.7)+theme_minimal()+ylab("%")+ggtitle("Sentiment by Device")+theme(plot.title = element_text(hjust = 0.5))+xlab("Tweets")+scale_fill_manual(values = c("#24576D", "#A113E2",
+                                 "#000000", "#D91460",
+                                 "#28AADC",
+                                 "#40cc49",
+                                 "#F2583F",
+                                 "#96503F","#ffc100","#918d58"))+facet_grid(type~.)+theme(plot.title=element_text(size=18),axis.text.x = element_text(angle=90, vjust=1))
+
+  
+                                                                                     
+  
+
+
+```
+
+
+### Location Wise Sentiment Plots
+
+
+```{r}
+
+all_states <- map_data("state")
+#plot all states with ggplot
+p <- ggplot()
+p <- p + geom_polygon( data=all_states, aes(x=long, y=lat, group = group),colour="white", fill="light green" )+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(), 
+        panel.background = element_rect(fill = 'white', colour = 'white'), 
+        axis.line = element_line(colour = "white"), legend.position="none",
+        axis.ticks=element_blank(), axis.text.x=element_blank(),
+        axis.text.y=element_blank())
+
+
+
+#base_world <- p + cleanup
+
+temp <- clean_sent %>% group_by(latitude,longitude,sentiment,type) %>% summarise(n=n()) %>% filter(latitude<=max(all_states$lat),latitude>=min(all_states$lat),longitude>=min(all_states$long),longitude<=max(all_states$long))
+
+  
+map_data <- 
+  p+ geom_point(data=temp, 
+             aes(x=longitude, y=latitude, colour=sentiment,size=n)) +
+  theme(legend.position = "right") + 
+  ggtitle("Sentiments By Location")+scale_color_manual(values = c("#24576D", "#A113E2",
+                                 "#000000", "#D91460",
+                                 "#28AADC",
+                                 "#40cc49",
+                                 "#F2583F",
+                                 "#96503F","#ffc100","#918d58"))+facet_grid(type~.)+theme(plot.title = element_text(hjust = 0.5))
+map_data
+
+```
+
+## Sentiment Scores 
+
+### How do the sentiment scores change across the lines?
+
+```{r}
+library(gridExtra)
+words_ing_clean_score <- words_ing_clean %>% inner_join(get_sentiments("afinn"),by="word")
+words_wom_clean_score <- words_wom_clean %>% inner_join(get_sentiments("afinn"),by="word")
+
+p1 <- words_ing_clean_score %>% mutate(created=ymd_hms(created))%>% mutate(date=date(created))%>%  group_by(X) %>% summarise(sent_score=sum(score)) %>%
+  ggplot(aes(x=X,y=sent_score))+geom_bar(stat="identity")+theme_minimal()+ggtitle("Sentiment Scores for the Inauguration Tweets ")+theme(plot.title = element_text(hjust = 0.5))
+p2 <- words_wom_clean_score %>% mutate(created=ymd_hms(created))%>% mutate(date=date(created))%>%  group_by(X) %>% summarise(sent_score=sum(score)) %>%
+  ggplot(aes(x=X,y=sent_score))+geom_bar(stat="identity")+theme_minimal()+ggtitle("Sentiment Scores for the Women's March Tweets")+theme(plot.title = element_text(hjust = 0.5))
+
+grid.arrange(p1,p2)
+
+p1 <- words_ing_clean_score %>% mutate(created=ymd_hms(created))%>% mutate(date=date(created))%>%  group_by(X) %>% summarise(sent_score=sum(score)) %>% mutate(positive=ifelse(sent_score>0,"Yes","No")) %>% group_by(positive) %>% summarise(n=n()) %>% mutate(n=n/sum(n)) %>%
+  ggplot(aes(x=positive, y=n*100)) +
+geom_bar(stat="identity")+theme_minimal() +ggtitle("Percentage of Positive and Negative Sentiment Scores for Inauguration Tweets")+ylab("%")+theme(plot.title = element_text(hjust=0.5))
+
+p2 <- words_wom_clean_score %>% mutate(created=ymd_hms(created))%>% mutate(date=date(created))%>%  group_by(X) %>% summarise(sent_score=sum(score)) %>% mutate(positive=ifelse(sent_score>0,"Yes","No")) %>% group_by(positive) %>% summarise(n=n()) %>% mutate(n=n/sum(n)) %>%
+  ggplot(aes(x=positive, y=n*100)) +
+geom_bar(stat="identity")+theme_minimal() +ggtitle("Percentage of Positive and Negative Sentiment Scores for Women's March Tweets")+ylab("%")+theme(plot.title=element_text(hjust=0.5))
+
+grid.arrange(p1,p2)
+
+
+
+```
+
+
+
+From the above, we see that a larger portion of the Tweets regarding the Inauguration were negative than compared to the Tweets regarding the Women's March.
+
+### How do the sentiment Scores change with time?
+
+
+```{r}
+t1 <- words_ing_clean_score %>% mutate(created=ymd_hms(created)) %>% mutate(time= hour(created)+minute(created)/60) %>% group_by(time) %>% summarise(sent_score=sum(score)) %>% mutate(type="Inauguration")
+t2 <- words_wom_clean_score %>% mutate(created=ymd_hms(created)) %>% mutate(time= hour(created)+minute(created)/60) %>% group_by(time) %>% summarise(sent_score=sum(score))%>% mutate(type="Women's March")
+
+bind_rows(t1,t2)%>%ggplot(aes(x=time,y=sent_score))+geom_line()+theme_minimal()+ggtitle("Sentiment Scores By Time")+theme(plot.title = element_text(hjust = 0.5))+scale_x_continuous(breaks=seq(0,23,1))+geom_hline(yintercept = 0,color="red",linetype=2)+facet_wrap(~type,nrow = 2)
+
+
+```
+
+
+We see that a larger proportion of tweets about the Inauguration were negative in nature. From the time series plots above, we see that a larger portion of tweet instances were above the zero-line for the Women's March Tweets. We see a spike early in the morning.
+
+## Positive and Negative Words.
+
+```{r}
+
+words_ing_clean_score %>% mutate(if_pos=ifelse(score>0,"Positive","Negative"))%>% group_by(word,if_pos) %>% summarise(n=n()) %>% arrange(desc(n)) %>% filter(n>50) %>%
+  ggplot(aes(x=reorder(word,n),n))+geom_bar(stat="identity")+xlab("words")+ggtitle("Positive and Negative Words in the Inauguration Tweets")+facet_wrap(~if_pos,ncol=1)+theme(plot.title=element_text(size=18),axis.text.x = element_text(angle=90, vjust=1))
+
+
+words_wom_clean_score %>% mutate(if_pos=ifelse(score>0,"Positive","Negative"))%>% group_by(word,if_pos) %>% summarise(n=n()) %>% arrange(desc(n)) %>% filter(n>50) %>%
+  ggplot(aes(x=reorder(word,n),n))+geom_bar(stat="identity")+xlab("words")+ggtitle("Positive and Negative Words in the Women's March Tweets")+facet_wrap(~if_pos,ncol=1)+theme(plot.title=element_text(size=18),axis.text.x = element_text(angle=90, vjust=1))
+
+
+
+
+```
+
+
+
+## Relationship between number of retweets and favourite count
+
+```{r}
+
+ing_retweet <-ing %>% select(retweetCount,favoriteCount) %>% mutate(event="Inauguration") %>% gather(type,value,1:2)
+wom_retweet <- wom %>% select(retweetCount,favoriteCount) %>% mutate(event="Women's March") %>% gather(type,value,1:2)
+
+bind_rows(ing_retweet,wom_retweet) %>% na.omit() %>% filter(value<10000) %>%
+ ggplot(aes(x=value, fill=type)) +
+geom_histogram(position="identity", alpha=0.4)+facet_grid(event~.)+ggtitle("Distribution of Retweet and Favourite Counts")+theme(plot.title=element_text(hjust=0.5))
+
+
+```
+
+
+## Bigrams
+
+What pairs of words occur frequently in each set of tweets?
+
+```{r}
+library(DT)
+wom_trigram <- wom %>% unnest_tokens(bigram, text, token = "ngrams", n = 2) %>% separate(bigram,c("word1","word2"),sep=" ") %>% filter(!word1 %in% stop_words$word,!str_detect(word1,"t.co"),str_detect(word1,"^[a-z']+$"),!str_detect(word1,"rt"),!str_detect(word1,"https")) %>% filter(!word2 %in% stop_words$word,!str_detect(word2,"t.co"),str_detect(word2,"^[a-z']+$"),!str_detect(word2,"rt"),!str_detect(word2,"https"))
+
+ing_trigram <- ing %>% unnest_tokens(bigram, text, token = "ngrams", n = 2) %>% separate(bigram,c("word1","word2"),sep=" ") %>% filter(!word1 %in% stop_words$word,!str_detect(word1,"t.co"),str_detect(word1,"^[a-z']+$"),!str_detect(word1,"rt"),!str_detect(word1,"https")) %>% filter(!word2 %in% stop_words$word,!str_detect(word2,"t.co"),str_detect(word2,"^[a-z']+$"),!str_detect(word2,"rt"),!str_detect(word2,"https"))
+
+
+set.seed(2017)
+ing_trigram %>% group_by(word1,word2) %>% summarise(n=n()) %>%
+  filter(n>100) %>% graph_from_data_frame() %>% ggraph(layout="fr")+geom_edge_link(aes(edge_alpha=n),show.legend = F)+geom_node_point(colour="lightblue",size=5)+geom_node_text(aes(label=name),vjust=1,hjust=1)+theme_void()+ggtitle("Inauguration")+theme(plot.title=element_text(hjust=0.5))
+
+
+wom_trigram %>% group_by(word1,word2) %>% summarise(n=n()) %>%
+  filter(n>100) %>% graph_from_data_frame() %>% ggraph(layout="fr")+geom_edge_link(aes(edge_alpha=n),show.legend = F)+geom_node_point(colour="lightblue",size=5)+geom_node_text(aes(label=name),vjust=1,hjust=1)+theme_void()+ggtitle("Women's March")+theme(plot.title=element_text(hjust=0.5))
+
+
+
+
+
+```
+
+
+
+Both plots above show us basic structure of the language used in both the set of tweets. The plot with respect to the inauguration has a structure which closely resembles what Trump supporters feel about the other side. The chain of words "viral","video","exposes","exposes","clinton" shows how she is viewed by Trump supporters.We also see words that directly relate to the inauguration; words such as "gigapixel"- the camera used to take panoramic shots of inauguration crowds,"larger crowd","white house","riots" give us a brief description of the events that occurred. The recent Super Bowl is also mentioned in words like "winning","touchdown","game".When it comes to the Women's March, words such "unstoppable", "werise", "imwithher","theresistance","indivisible","muslimban","impeachtr","nofacistusa","indivisible" come close.
+
+## Screen Names
+
+### Screen Names with the most number of tweets
+
+Who are the most frequent users who tweeted?
+
+```{r}
+
+wom %>% group_by(screenName) %>% summarise(n=n()) %>% arrange(desc(n)) %>% top_n(15) %>% ggplot(aes(x=reorder(screenName,n),y=n))+geom_bar(stat="identity")+ggtitle("Top Screen Handles for Women's March")+theme(plot.title = element_text(hjust=0.5),axis.text.x = element_text(angle=90, vjust=1))+xlab("Screen Handle")+ylab("Number of Tweets")
+
+ing %>% group_by(screenName) %>% summarise(n=n()) %>% arrange(desc(n)) %>% top_n(15) %>% ggplot(aes(x=reorder(screenName,n),y=n))+geom_bar(stat="identity")+ggtitle("Top Screen Handles for the Inauguration")+theme(plot.title = element_text(hjust=0.5),axis.text.x = element_text(angle=90, vjust=1))+xlab("Screen Handle")+ylab("Number of Tweets")
+
+
+
+
+```
+
+
+### Twitter Mentions
+
+
+Which Screen Names were mentioned most often? To get this information, we tokenize the texts and filter any string that start with the character "@". To tokenize the string, we will first split the string using the space(" ") as the seperator.The **unnest** function is then used to tokenize the text into seperate words. Using the **grepl()** function to extract texts that start with the '@' character, we filter our data to achieve our goal.
+
+***Visualization***
+
+We could visualize the screenName pairs using a table. By let's try visualizing the pairs using a network. The **ggraph** package allows for the usage of grammar of graphics rules to plot the network.
+
+### Visualization using ggraph
+
+```{r}
+
+wom_mention<-wom  %>% select(screenName,text) %>% mutate(mention = strsplit(as.character(text), " ")) %>%  unnest(mention) %>% filter(grepl("^@",mention)) %>% select(-text) %>% mutate(mention=gsub("@","",mention)) %>%
+  group_by(screenName,mention) %>% summarise(n=n())
+
+
+ing_mention<-ing  %>% select(screenName,text) %>% mutate(mention = strsplit(as.character(text), " ")) %>%  unnest(mention) %>% filter(grepl("^@",mention)) %>% select(-text) %>% mutate(mention=gsub("@","",mention)) %>%
+  group_by(screenName,mention) %>% summarise(n=n())
+
+a <- grid::arrow(type = "closed", length = unit(.15, "inches"))
+set.seed(200)
+
+ing_mention %>% filter(n>1) %>% graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha=n,edge_colour="#5d0d0d"), show.legend = FALSE, arrow = a) +geom_node_point(color = "#558d57", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()+ggtitle("Inauguration Mentions' Network ")+theme(plot.title = element_text(hjust=0.5))
+
+
+wom_mention %>% filter(n>1) %>% graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha=n,edge_colour="#5d0d0d"), show.legend = FALSE,arrow=a) +
+  geom_node_point(color = "#62185f", size = 5) +
+  geom_node_text(aes(label = name),vjust=1,hjust=1) +
+  theme_void()+ggtitle("Women Mentions' Network ")+theme(plot.title = element_text(hjust=0.5))
+```
+
+
+### Twitter Mentions using networkD3
+
+
+***Women's March***
+
+```{r}
+
+library(networkD3)
+
+wom_mention<-wom  %>% select(screenName,text) %>% mutate(mention = strsplit(as.character(text), " ")) %>%  unnest(mention) %>% filter(grepl("^@",mention)) %>% select(-text) %>% mutate(mention=gsub("@","",mention)) %>%
+  group_by(screenName,mention) %>% summarise(n=n()) %>% filter(n>1)
+
+
+ing_mention<-ing %>% select(screenName,text) %>% mutate(mention = strsplit(as.character(text), " ")) %>%  unnest(mention) %>% filter(grepl("^@",mention)) %>% select(-text) %>% mutate(mention=gsub("@","",mention)) %>%
+  group_by(screenName,mention) %>% summarise(n=n()) %>% filter(n>2)
+
+mention <- wom_mention$mention
+screenName <- wom_mention$screenName
+n <- wom_mention$n
+nodeFactors <- factor(sort(unique(c(screenName, mention))))
+nodes <- data.frame(name = nodeFactors, group = 1)
+
+screenName <- match(screenName, levels(nodeFactors)) - 1
+mention <- match(mention, levels(nodeFactors)) - 1
+links <- data.frame(screenName, mention, n)
+
+forceNetwork(Links = links, Nodes = nodes, Source = 'screenName', 
+             Target = 'mention', Value = 'n', NodeID = 'name', Group = 'group',fontSize = 14)
+
+##############################################################################################
+
+
+
+
+```
+
+
+***Inauguration***
+
+```{r}
+
+
+mention <- ing_mention$mention
+screenName <- ing_mention$screenName
+n <- ing_mention$n
+nodeFactors <- factor(sort(unique(c(screenName, mention))))
+nodes <- data.frame(name = nodeFactors, group = 1)
+
+screenName <- match(screenName, levels(nodeFactors)) - 1
+mention <- match(mention, levels(nodeFactors)) - 1
+links <- data.frame(screenName, mention, n)
+
+forceNetwork(Links = links, Nodes = nodes, Source = 'screenName', 
+             Target = 'mention', Value = 'n', NodeID = 'name', Group = 'group',fontSize = 14)
+ 
+```
+
+
+
+## Correlated Terms
+
+```{r}
+
+library(widyr)
+ing_cor <- words_ing_clean %>%
+  group_by(word) %>%
+  filter(n()>=20) %>%
+  pairwise_cor(word,X,sort=T)
+
+wom_cor <- words_wom_clean %>%
+  group_by(word) %>%
+  filter(n()>=20) %>%
+  pairwise_cor(word,X,sort=T)
+
+ing_cor %>% filter(correlation==1) %>% graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha=correlation,edge_colour="#5d0d0d"), show.legend = FALSE, arrow = a,check_overlap = T) +geom_node_point(color = "#558d57", size = 5) +
+  geom_node_text(aes(label = name), vjust = 1, hjust = 1) +
+  theme_void()+ggtitle("Most Correlated Terms in the set of Inauguration Tweets")+theme(plot.title = element_text(hjust=0.5))
+
+wom_cor %>% filter(correlation==1) %>% graph_from_data_frame() %>%
+  ggraph(layout = "fr") +
+  geom_edge_link(aes(edge_alpha=correlation,edge_colour="#5d0d0d"), show.legend = FALSE,arrow=a,check_overlap = T) +
+  geom_node_point(color = "#62185f", size = 5) +
+  geom_node_text(aes(label = name),vjust=1,hjust=1) +
+  theme_void()+ggtitle("Most Correlated Terms in the set of Women's March Tweets")+theme(plot.title = element_text(hjust=0.5))
+
+
+
+```
+
+
+##
